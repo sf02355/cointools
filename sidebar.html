@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bybit 订单侧边栏 - 科技紧凑版</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h2><span>Bybit</span> 订单管理</h2>
+    </header>
+
+    <section class="status-panel card">
+      <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+        <label>当前价格:</label>
+        <span id="current-price">等待更新</span>
+      </div>
+      <div style="display: flex;align-items: center;justify-content: space-between;">
+        <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+          <label>最后更新:</label>
+          <span id="last-updated">-</span>
+        </div>
+        <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+          <label>自动运行:</label>
+          <span id="auto-status" class="stopped">已停止</span>
+        </div>
+      </div>
+      
+    </section>
+
+    <nav class="tab-nav">
+      <div id="tabOrderBtn" class="active">订单</div>
+      <div id="tabSetBtn">设置</div>
+      <div id="tabLogBtn">日志</div>
+    </nav>
+
+    <main class="tab-content-area card">
+      <div id="tabOrder" class="tab-content active">
+        <fieldset>
+          <legend>下单参数</legend>
+          <div class="form-group">
+            <label for="symbol-id">交易对:</label>
+            <input type="text" id="symbol-id" value="NXPCUSDT" placeholder="例如：BTCUSDT">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="order-price">价格:</label>
+              <input type="number" id="order-price" step="0.00001" value="2.01">
+            </div>
+            <div class="form-group">
+              <label for="order-quantity">数量:</label>
+              <input type="number" id="order-quantity" step="0.1" value="50.0">
+            </div>
+          </div>
+          
+        </fieldset>
+
+        <fieldset>
+          <legend>止盈止损</legend>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="tp-percent">止盈(%):</label>
+              <input type="number" id="tp-percent" step="0.00001" value="0.2">
+            </div>
+            <div class="form-group">
+              <label for="sl-percent">止损(%):</label>
+              <input type="number" id="sl-percent" step="0.00001" value="0.2">
+            </div>
+          </div>
+          
+        </fieldset>
+
+        <div class="button-group">
+            <button id="place-order-btn" class="btn btn-primary">生成并提交订单</button>
+            <div class="auto-run-controls">
+                <button id="auto-run-btn" class="btn btn-secondary">自动运行</button>
+                <button id="stop-auto-btn" class="btn btn-danger" disabled>停止</button>
+            </div>
+        </div>
+      </div>
+
+      <div id="tabSet" class="tab-content">
+        <fieldset>
+          <legend>API 配置</legend>
+          <div class="form-group">
+            <label for="api-key">API 密钥:</label>
+            <input type="text" id="api-key" value="wDovhuTNFRJmIpqnPF">
+          </div>
+          <div class="form-group">
+            <label for="api-secret">API 私钥:</label>
+            <input type="password" id="api-secret">
+          </div>
+          <div class="form-group">
+            <label for="password">配置密码:</label>
+            <input type="password" id="password">
+          </div>
+          <div class="button-group-inline stackable">
+            <button id="save-config-btn" class="btn btn-info">保存配置</button>
+            <button id="load-config-btn" class="btn btn-primary">加载配置</button>
+          </div>
+        </fieldset>
+         <fieldset>
+            <legend>其他</legend>
+             <div class="button-group-inline stackable">
+                <button id="toggle-btn" class="btn btn-outline">切换侧边栏</button>
+                <button id="test-communication-btn" class="btn btn-outline">测试通信</button>
+             </div>
+         </fieldset>
+      </div>
+
+      <div id="tabLog" class="tab-content">
+        <div class="log-section" style="display: none;">
+            <h3>订单 JSON 输出:</h3>
+            <pre id="json-output">等待生成订单...</pre>
+        </div>
+        <div class="log-section">
+            <h3>订单结果:</h3>
+            <ul id="order-results-list" class="log-list"></ul>
+        </div>
+        <div class="log-section">
+            <h3>消息日志:</h3>
+            <ul id="message-list" class="log-list"></ul>
+        </div>
+      </div>
+    </main>
+
+    <footer class="card">
+      <h3>提交结果:</h3>
+      <pre id="submit-result">无结果</pre>
+    </footer>
+
+  </div> <script src="sidebar.js"></script>
+</body>
+</html>

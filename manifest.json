@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Bybit 助手",
+  "version": "1.0",
+  "description": "Bybit trading extension with sidebar。bybit的现货交易助手。主要针对的是刷现货流量的任务。这种任务一般不统计API交易的结果，所以通过这种方式来完成",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "activeTab",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://www.bybit.com/*",
+    "https://api.bybit.com/*",
+    "https://api2-2.bybit.com/*",
+    "https://*.bybit.com/*"
+  ],
+  "action": {
+    "default_title": "Open Bybit Trading Sidebar"
+  },
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.bybit.com/*"],
+      "js": ["sidebar.js"],
+      "css": ["sidebar.css"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
