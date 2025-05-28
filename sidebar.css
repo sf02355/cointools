@@ -28,7 +28,7 @@ body {
   font-family: var(--font-body);
   padding: 10px; /* 减小 Body 边距 */
   width: 100%; /* 设定一个较窄的宽度 */
-  max-width: 400px; /* 最大宽度 */;
+  /*max-width: 400px;  最大宽度 */;
   background-color: var(--bg-dark);
   color: var(--text-primary);
   font-size: 13px; /* 略微减小基础字体 */

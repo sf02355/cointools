@@ -13,31 +13,84 @@
     </header>
 
     <section class="status-panel card">
-      <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
-        <label>当前价格:</label>
-        <span id="current-price">等待更新</span>
-      </div>
-      <div style="display: flex;align-items: center;justify-content: space-between;">
         <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
-          <label>最后更新:</label>
-          <span id="last-updated">-</span>
-        </div>
-        <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
-          <label>自动运行:</label>
-          <span id="auto-status" class="stopped">已停止</span>
-        </div>
-      </div>
-      
+            <label>当前价格 (<span id="current-symbol">NXPCUSDT</span>):</label>
+            <span id="current-price">等待更新</span>
+          </div>
+          <div style="display: flex;align-items: center;justify-content: space-between;">
+            <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+              <label>最后更新:</label>
+              <span id="last-updated">-</span>
+            </div>
+            <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+              <label>网格状态:</label>
+              <span id="grid-status" class="stopped">已停止</span>
+            </div>
+          </div>
+          <div class="status-item" style="display: flex;align-items: center;gap: 10px;">
+            <label>交易费率:</label>
+            <span id="fee-rate">等待查询...</span>
+          </div>
     </section>
 
     <nav class="tab-nav">
-      <div id="tabOrderBtn" class="active">订单</div>
+      <div id="tabGridBtn" class="active">网格</div>
+      <div id="tabOrderBtn">手动</div>
       <div id="tabSetBtn">设置</div>
       <div id="tabLogBtn">日志</div>
     </nav>
 
     <main class="tab-content-area card">
-      <div id="tabOrder" class="tab-content active">
+
+        <div id="tabGrid" class="tab-content active">
+            <fieldset>
+                <legend>网格参数</legend>
+                <div class="form-group">
+                    <label for="grid-symbol">交易对:</label>
+                    <input type="text" id="grid-symbol" value="NXPCUSDT" placeholder="例如：BTCUSDT">
+                </div>
+                <div class="form-group">
+                    <label for="upper-price">价格上限:</label>
+                    <input type="number" id="upper-price" step="0.00001" value="2.5">
+                </div>
+                <div class="form-group">
+                    <label for="lower-price">价格下限:</label>
+                    <input type="number" id="lower-price" step="0.00001" value="1.5">
+                </div>
+                <div class="form-group">
+                    <label for="grid-count">网格数量:</label>
+                    <input type="number" id="grid-count" step="1" value="10">
+                </div>
+                 <div class="form-group">
+                    <label for="total-usdt">投入USDT:</label>
+                    <input type="number" id="total-usdt" step="1" value="100">
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>网格预览 (等差)</legend>
+                <div style="font-size: 0.85em; margin-bottom: 10px;">
+                    <span >每个网格投入: <strong id="usdt-per-grid">0.00</strong> USDT</span><br>
+                    <span >价格间隔: <strong id="price-interval">0.00</strong></span><br>
+                    <span >预计买入数量 (每个网格): <strong id="qty-per-buy-grid">0.00</strong></span><br>
+                    <span >预计卖出数量 (每个网格): <strong id="qty-per-sell-grid">0.00</strong></span>
+                </div>
+                <ul id="grid-preview-list" class="log-list" style="max-height: 100px;">
+                    <li>等待计算...</li>
+                </ul>
+            </fieldset>
+
+            <div class="button-group">
+                <button id="calculate-grid-btn" class="btn btn-outline">计算网格</button>
+                <button id="start-grid-btn" class="btn btn-primary">启动网格</button>
+                <button id="stop-grid-btn" class="btn btn-danger" disabled>停止网格</button>
+            </div>
+             <h3>当前网格订单:</h3>
+             <ul id="grid-orders-list" class="log-list" style="max-height: 150px;"></ul>
+        </div>
+
+
+      <div id="tabOrder" class="tab-content">
         <fieldset>
           <legend>下单参数</legend>
           <div class="form-group">
@@ -54,9 +107,7 @@
               <input type="number" id="order-quantity" step="0.1" value="50.0">
             </div>
           </div>
-          
         </fieldset>
-
         <fieldset>
           <legend>止盈止损</legend>
           <div class="form-row">
@@ -69,15 +120,13 @@
               <input type="number" id="sl-percent" step="0.00001" value="0.2">
             </div>
           </div>
-          
         </fieldset>
-
         <div class="button-group">
             <button id="place-order-btn" class="btn btn-primary">生成并提交订单</button>
-            <div class="auto-run-controls">
+            <!-- <div class="auto-run-controls">
                 <button id="auto-run-btn" class="btn btn-secondary">自动运行</button>
                 <button id="stop-auto-btn" class="btn btn-danger" disabled>停止</button>
-            </div>
+            </div> -->
         </div>
       </div>
 
@@ -99,6 +148,7 @@
           <div class="button-group-inline stackable">
             <button id="save-config-btn" class="btn btn-info">保存配置</button>
             <button id="load-config-btn" class="btn btn-primary">加载配置</button>
+            <button id="get-fee-btn" class="btn btn-outline">查询费率</button>
           </div>
         </fieldset>
          <fieldset>
@@ -111,26 +161,27 @@
       </div>
 
       <div id="tabLog" class="tab-content">
-        <div class="log-section" style="display: none;">
+        <div class="log-section">
+            <h3>消息日志:</h3>
+            <ul id="message-list" class="log-list"></ul>
+        </div>
+         <div class="log-section" style="display: none;">
             <h3>订单 JSON 输出:</h3>
             <pre id="json-output">等待生成订单...</pre>
         </div>
         <div class="log-section">
-            <h3>订单结果:</h3>
+            <h3>手动订单结果:</h3>
             <ul id="order-results-list" class="log-list"></ul>
-        </div>
-        <div class="log-section">
-            <h3>消息日志:</h3>
-            <ul id="message-list" class="log-list"></ul>
         </div>
       </div>
     </main>
 
     <footer class="card">
-      <h3>提交结果:</h3>
+      <h3>提交/查询结果:</h3>
       <pre id="submit-result">无结果</pre>
     </footer>
 
-  </div> <script src="sidebar.js"></script>
+  </div>
+  <script src="sidebar.js"></script>
 </body>
 </html>
