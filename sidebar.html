@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bybit 订单侧边栏 - 科技紧凑版</title>
+  <title>Bybit 订单侧边栏 - 网格交易</title>
   <link rel="stylesheet" href="sidebar.css">
 </head>
 <body>
@@ -34,116 +34,82 @@
     </section>
 
     <nav class="tab-nav">
-      <div id="tabGridBtn" class="active">网格</div>
-      <div id="tabOrderBtn">手动</div>
-      <div id="tabSetBtn">设置</div>
-      <div id="tabLogBtn">日志</div>
+      <div id="tabGridBtn" class="active">网格交易</div>
+      <div id="tabSetBtn">参数设置</div>
+      <div id="tabLogBtn">运行日志</div>
     </nav>
 
     <main class="tab-content-area card">
 
         <div id="tabGrid" class="tab-content active">
             <fieldset>
-                <legend>网格参数</legend>
+                <legend>网格参数配置</legend>
                 <div class="form-group">
                     <label for="grid-symbol">交易对:</label>
-                    <input type="text" id="grid-symbol" value="NXPCUSDT" placeholder="例如：BTCUSDT">
+                    <input type="text" id="grid-symbol" value="NXPCUSDT" placeholder="例如: BTCUSDT">
                 </div>
                 <div class="form-group">
                     <label for="upper-price">价格上限:</label>
-                    <input type="number" id="upper-price" step="0.00001" value="2.5">
+                    <input type="number" id="upper-price" step="any" value="2.5">
                 </div>
                 <div class="form-group">
                     <label for="lower-price">价格下限:</label>
-                    <input type="number" id="lower-price" step="0.00001" value="1.5">
+                    <input type="number" id="lower-price" step="any" value="1.5">
                 </div>
                 <div class="form-group">
-                    <label for="grid-count">网格数量:</label>
-                    <input type="number" id="grid-count" step="1" value="10">
+                    <label for="grid-count">网格数量:</label> <input type="number" id="grid-count" step="1" value="10" min="2">
                 </div>
                  <div class="form-group">
                     <label for="total-usdt">投入USDT:</label>
-                    <input type="number" id="total-usdt" step="1" value="100">
+                    <input type="number" id="total-usdt" step="any" value="100" min="1">
                 </div>
             </fieldset>
 
             <fieldset>
-                <legend>网格预览 (等差)</legend>
+                <legend>网格详情与状态</legend>
                 <div style="font-size: 0.85em; margin-bottom: 10px;">
-                    <span >每个网格投入: <strong id="usdt-per-grid">0.00</strong> USDT</span><br>
-                    <span >价格间隔: <strong id="price-interval">0.00</strong></span><br>
-                    <span >预计买入数量 (每个网格): <strong id="qty-per-buy-grid">0.00</strong></span><br>
-                    <span >预计卖出数量 (每个网格): <strong id="qty-per-sell-grid">0.00</strong></span>
+                    <span >每格USDT: <strong id="usdt-per-grid">0.00</strong></span> | 
+                    <span >价格间隔: <strong id="price-interval">0.00</strong></span>
                 </div>
-                <ul id="grid-preview-list" class="log-list" style="max-height: 100px;">
-                    <li>等待计算...</li>
-                </ul>
+                <div class="table-container">
+                    <table id="grid-preview-table">
+                        <thead>
+                            <tr>
+                                <th>序号</th>
+                                <th>买入价</th>
+                                <th>卖出价</th>
+                                <th>数量(估)</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="grid-preview-table-body">
+                            <tr><td colspan="5" style="text-align:center;">请先计算网格</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </fieldset>
 
             <div class="button-group">
-                <button id="calculate-grid-btn" class="btn btn-outline">计算网格</button>
+                <button id="calculate-grid-btn" class="btn btn-outline">计算/刷新网格</button>
                 <button id="start-grid-btn" class="btn btn-primary">启动网格</button>
                 <button id="stop-grid-btn" class="btn btn-danger" disabled>停止网格</button>
             </div>
-             <h3>当前网格订单:</h3>
-             <ul id="grid-orders-list" class="log-list" style="max-height: 150px;"></ul>
         </div>
-
-
-      <div id="tabOrder" class="tab-content">
-        <fieldset>
-          <legend>下单参数</legend>
-          <div class="form-group">
-            <label for="symbol-id">交易对:</label>
-            <input type="text" id="symbol-id" value="NXPCUSDT" placeholder="例如：BTCUSDT">
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="order-price">价格:</label>
-              <input type="number" id="order-price" step="0.00001" value="2.01">
-            </div>
-            <div class="form-group">
-              <label for="order-quantity">数量:</label>
-              <input type="number" id="order-quantity" step="0.1" value="50.0">
-            </div>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>止盈止损</legend>
-          <div class="form-row">
-            <div class="form-group">
-              <label for="tp-percent">止盈(%):</label>
-              <input type="number" id="tp-percent" step="0.00001" value="0.2">
-            </div>
-            <div class="form-group">
-              <label for="sl-percent">止损(%):</label>
-              <input type="number" id="sl-percent" step="0.00001" value="0.2">
-            </div>
-          </div>
-        </fieldset>
-        <div class="button-group">
-            <button id="place-order-btn" class="btn btn-primary">生成并提交订单</button>
-            <!-- <div class="auto-run-controls">
-                <button id="auto-run-btn" class="btn btn-secondary">自动运行</button>
-                <button id="stop-auto-btn" class="btn btn-danger" disabled>停止</button>
-            </div> -->
-        </div>
-      </div>
 
       <div id="tabSet" class="tab-content">
         <fieldset>
           <legend>API 配置</legend>
           <div class="form-group">
             <label for="api-key">API 密钥:</label>
-            <input type="text" id="api-key" value="wDovhuTNFRJmIpqnPF">
+            <input type="text" id="api-key" placeholder="请输入API Key">
           </div>
           <div class="form-group">
             <label for="api-secret">API 私钥:</label>
-            <input type="password" id="api-secret">
+            <input type="password" id="api-secret" placeholder="请输入API Secret">
           </div>
           <div class="form-group">
             <label for="password">配置密码:</label>
-            <input type="password" id="password">
+            <input type="password" id="password" placeholder="用于加密存储API密钥">
           </div>
           <div class="button-group-inline stackable">
             <button id="save-config-btn" class="btn btn-info">保存配置</button>
@@ -165,21 +131,8 @@
             <h3>消息日志:</h3>
             <ul id="message-list" class="log-list"></ul>
         </div>
-         <div class="log-section" style="display: none;">
-            <h3>订单 JSON 输出:</h3>
-            <pre id="json-output">等待生成订单...</pre>
-        </div>
-        <div class="log-section">
-            <h3>手动订单结果:</h3>
-            <ul id="order-results-list" class="log-list"></ul>
-        </div>
       </div>
     </main>
-
-    <footer class="card">
-      <h3>提交/查询结果:</h3>
-      <pre id="submit-result">无结果</pre>
-    </footer>
 
   </div>
   <script src="sidebar.js"></script>

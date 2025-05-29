@@ -2,14 +2,16 @@
 let orderResults = []; 
 let messages = [];
 let trackedOrders = new Map(); 
-let gridOrders = new Map(); 
-let activeBuyOrdersPerLevel = new Map(); 
-let activeSellOrdersPerLevel = new Map(); 
-let isPlacingOrder = false; 
+let gridOrders = new Map(); // Stores active Bybit orderId -> {clientOrderId, price, side, status, quantity, filledQty, levelIndexInLevelsArray, symbol, gridPairIndex}
+let activeBuyOrdersPerLevel = new Map(); // Map<priceString, orderId | "PLACING..."> 
+let activeSellOrdersPerLevel = new Map(); // Map<priceString, orderId | "PLACING..."> 
+
+let isPlacingOrder = false; // Global lock for placing any grid order
 
 let gridConfig = { 
-    symbol: 'NXPCUSDT', upperPrice: 0, lowerPrice: 0, gridCount: 0, totalUsdt: 0,
-    usdtPerGrid: 0, qtyPerGrid: 0, interval: 0, levels: [], 
+    symbol: 'NXPCUSDT', upperPrice: 0, lowerPrice: 0, gridCount: 0, // gridCount is number of price levels
+    numberOfGrids: 0, // Actual number of buy/sell pairs
+    totalUsdt: 0, usdtPerGrid: 0, interval: 0, levels: [], 
     basePrecision: 5, quotePrecision: 5, qtyPrecision: 1,
 };
 let instrumentInfo = {}; 
@@ -17,7 +19,7 @@ let instrumentInfo = {};
 let serverTimeOffset = 0;
 let priceWsHeartbeatInterval = null;
 let orderWsHeartbeatInterval = null;
-let reconnectAttempts = 0; // Shared for now, can be separated for price/order WS if needed
+let reconnectAttempts = 0; 
 let isGridRunning = false;
 let currentPrice = null;
 let currentFeeRate = { takerFeeRate: '0.001', makerFeeRate: '0.001' }; 
@@ -33,11 +35,11 @@ let gridCheckInterval = null;
 
 // --- DOM Elements ---
 let gridSymbolInput, upperPriceInput, lowerPriceInput, gridCountInput, totalUsdtInput;
-let usdtPerGridSpan, priceIntervalSpan, qtyPerBuyGridSpan, qtyPerSellGridSpan, gridPreviewList, gridOrdersList;
+let usdtPerGridSpan, priceIntervalSpan, qtyPerBuyGridSpan, qtyPerSellGridSpan, gridPreviewTableBody;
 let startGridBtn, stopGridBtn, calculateGridBtn, gridStatusSpan;
 let currentPriceSpan, lastUpdatedSpan, feeRateSpan, currentSymbolSpan;
 let apiKeyInput, apiSecretInput, passwordInput; 
-let messageList, jsonOutput, submitResult, orderResultsList; 
+let messageList;
 
 // --- Utility & API Functions ---
 
@@ -47,7 +49,6 @@ async function syncServerTime() {
     const data = await response.json();
     if (data.retCode === 0 && data.result && data.result.timeNano) {
       serverTimeOffset = parseInt(data.result.timeNano) / 1000000 - Date.now();
-      addMessage('服务器时间同步成功', 'debug'); // Can be noisy
       return parseInt(data.result.timeNano) / 1000000;
     } else {
       addMessage(`服务器时间同步失败: ${data.retMsg || '未知错误'}`, 'error');
@@ -82,10 +83,8 @@ async function getCookiesFromBackground(url) {
     });
 }
 
-// Signature for general V5 HTTP API calls
 async function getHttpApiSignature(parameters, secret, timestamp, recvWindow) {
     const apiKeyToUse = API_KEY || (apiKeyInput ? apiKeyInput.value.trim() : '');
-    // For V5 HTTP API, the string to sign is: timestamp + apiKey + recvWindow + parameters
     const stringToSign = `${timestamp}${apiKeyToUse}${recvWindow}${parameters}`;
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey( 'raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'] );
@@ -93,9 +92,7 @@ async function getHttpApiSignature(parameters, secret, timestamp, recvWindow) {
     return Array.from(new Uint8Array(signatureBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Dedicated signature function for V5 WebSocket Authentication
 async function getWebSocketAuthSignature(apiSecret, expiresTimestamp) {
-    // For V5 WS Auth, the string to sign is: "GET/realtime" + expiresTimestamp
     const stringToSign = `GET/realtime${expiresTimestamp}`;
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey('raw', encoder.encode(apiSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -117,9 +114,8 @@ async function httpRequest_V5(endpoint, method, reqData = {}, info = "API Reques
   if (method === 'GET') {
     paramsQueryString = Object.keys(reqData).sort().map(key => `${key}=${encodeURIComponent(reqData[key])}`).join('&');
   } else {
-    bodyPayload = JSON.stringify(reqData); paramsQueryString = bodyPayload; // For POST, V5 API uses the body as the parameter string for signature
+    bodyPayload = JSON.stringify(reqData); paramsQueryString = bodyPayload; 
   }
-
   const signature = await getHttpApiSignature(paramsQueryString, currentApiSecret, timestamp, recvWindow);
   const headers = {
     'X-BAPI-SIGN-TYPE': '2', 'X-BAPI-SIGN': signature, 'X-BAPI-API-KEY': currentApiKey,
@@ -218,37 +214,48 @@ async function calculateGridLevels() {
     const qtyPrecisionNum = Number.isFinite(gridConfig.qtyPrecision) ? gridConfig.qtyPrecision : 1;
     const upper = upperPriceInput ? parseFloat(upperPriceInput.value) : 0;
     const lower = lowerPriceInput ? parseFloat(lowerPriceInput.value) : 0;
-    const count = gridCountInput ? parseInt(gridCountInput.value) : 0;
+    const count = gridCountInput ? parseInt(gridCountInput.value) : 0; 
     const totalUSDT投入 = totalUsdtInput ? parseFloat(totalUsdtInput.value) : 0;
+
     if (isNaN(upper) || isNaN(lower) || isNaN(count) || isNaN(totalUSDT投入) || upper <= lower || count < 2 || totalUSDT投入 <= 0) {
-        addMessage('网格参数无效', 'error'); if(gridPreviewList) gridPreviewList.innerHTML = '<li>参数无效</li>'; return null;
+        addMessage('网格参数无效 (价格、数量或投入)', 'error'); 
+        if(gridPreviewTableBody) {
+            gridPreviewTableBody.innerHTML = '<tr><td colspan="5" style="text-align: center;">参数无效</td></tr>';
+        }
+        return null;
     }
-    const interval = parseFloat(((upper - lower) / (count -1)).toFixed(quotePrecisionNum));
-    const usdtPerGridValue = parseFloat((totalUSDT投入 / count).toFixed(2));
+    const numberOfGrids = count - 1; 
+    if (numberOfGrids <= 0) { 
+         addMessage('网格数量太少，至少需要2个价格水平来形成1个网格。', 'error');
+         if(gridPreviewTableBody) gridPreviewTableBody.innerHTML = '<tr><td colspan="5" style="text-align: center;">网格数量太少</td></tr>';
+         return null;
+    }
+
+    const interval = parseFloat(((upper - lower) / numberOfGrids).toFixed(quotePrecisionNum));
+    const usdtPerGridOperation = parseFloat((totalUSDT投入 / numberOfGrids).toFixed(2)); 
+    
     gridConfig.symbol = symbol; gridConfig.upperPrice = upper; gridConfig.lowerPrice = lower;
-    gridConfig.gridCount = count; gridConfig.totalUsdt = totalUSDT投入; gridConfig.usdtPerGrid = usdtPerGridValue;
-    gridConfig.interval = interval; gridConfig.levels = [];
-    if(gridPreviewList) gridPreviewList.innerHTML = '';
-    for (let i = 0; i < count; i++) {
+    gridConfig.gridCount = count; 
+    gridConfig.numberOfGrids = numberOfGrids; 
+    gridConfig.totalUsdt = totalUSDT投入; 
+    gridConfig.usdtPerGrid = usdtPerGridOperation; 
+    gridConfig.interval = interval; 
+    gridConfig.levels = [];
+    
+    for (let i = 0; i < count; i++) { 
         const price = parseFloat((lower + i * interval).toFixed(quotePrecisionNum));
-        const quantity = parseFloat((usdtPerGridValue / price).toFixed(qtyPrecisionNum));
-        if (quantity < currentInstrument.minOrderQty) {
-             addMessage(`警告: L${i+1} @ ${price.toFixed(quotePrecisionNum)} 数量 ${quantity.toFixed(qtyPrecisionNum)} < 最小下单量 ${currentInstrument.minOrderQty}.`, 'error');
+        const quantityAtLevel = parseFloat((usdtPerGridOperation / price).toFixed(qtyPrecisionNum)); 
+        if (quantityAtLevel < currentInstrument.minOrderQty && i < numberOfGrids) { 
+             addMessage(`警告: L${i+1} 买入价 ${price.toFixed(quotePrecisionNum)} 估算数量 ${quantityAtLevel.toFixed(qtyPrecisionNum)} < 最小下单量 ${currentInstrument.minOrderQty}.`, 'error');
         }
-        const level = { price: price, quantity: quantity, indexInLevelsArray: i }; 
-        gridConfig.levels.push(level);
-        if(gridPreviewList){
-            const li = document.createElement('li');
-            li.textContent = `L${i + 1}: ${price.toFixed(quotePrecisionNum)} | USDT: ${usdtPerGridValue.toFixed(2)} | 数量: ${quantity.toFixed(qtyPrecisionNum)} ${currentInstrument.baseCoin}`;
-            gridPreviewList.appendChild(li);
-        }
+        gridConfig.levels.push({ price: price, quantity: quantityAtLevel, indexInLevelsArray: i });
     }
-    if(usdtPerGridSpan) usdtPerGridSpan.textContent = usdtPerGridValue.toFixed(2);
+
+    if(usdtPerGridSpan) usdtPerGridSpan.textContent = usdtPerGridOperation.toFixed(2);
     if(priceIntervalSpan) priceIntervalSpan.textContent = interval.toFixed(quotePrecisionNum);
-    const baseCoinForQtyDisplay = currentInstrument.baseCoin || symbol.replace('USDT','');
-    if(qtyPerBuyGridSpan) qtyPerBuyGridSpan.textContent = currentPrice ? `${(usdtPerGridValue / (currentPrice * (1 - 0.005))).toFixed(qtyPrecisionNum)} ${baseCoinForQtyDisplay}` : 'N/A';
-    if(qtyPerSellGridSpan) qtyPerSellGridSpan.textContent = currentPrice ? `${(usdtPerGridValue / (currentPrice * (1 + 0.005))).toFixed(qtyPrecisionNum)} ${baseCoinForQtyDisplay}` : 'N/A';
+    
     addMessage('网格计算完成', 'success');
+    renderGridPreviewTable(); 
     return gridConfig;
 }
 
@@ -292,88 +299,70 @@ async function manageGridLogic() {
         return;
     }
     
-    // Check if any order is currently being placed
     for (const status of activeBuyOrdersPerLevel.values()) {
-        if (status === "PLACING...") {
-            addMessage("已有买单正在处理中 (manageGridLogic)，跳过本次执行。", "debug");
-            return; 
-        }
+        if (status === "PLACING...") { addMessage("已有买单正在处理中 (manageGridLogic)，跳过本次执行。", "debug"); return; }
     }
     for (const status of activeSellOrdersPerLevel.values()) {
-        if (status === "PLACING...") {
-             addMessage("已有卖单正在处理中 (manageGridLogic)，跳过本次执行。", "debug");
-            return; 
-        }
+        if (status === "PLACING...") { addMessage("已有卖单正在处理中 (manageGridLogic)，跳过本次执行。", "debug"); return; }
     }
 
     isPlacingOrder = true; 
 
     try {
         const quotePrecisionNum = Number.isFinite(gridConfig.quotePrecision) ? gridConfig.quotePrecision : 5;
-        let targetBuyLevel = null;
+        let targetBuyGridPairIndex = -1; 
 
-        // Iterate from highest price level downwards to find the *first* buy opportunity
-        for (let i = gridConfig.levels.length - 1; i >= 0; i--) {
-            const level = gridConfig.levels[i];
-            if (level.price < currentPrice) { // This level is a potential buy point
-                const priceStr = level.price.toFixed(quotePrecisionNum);
-                
-                let correspondingSellPriceStr = null;
-                if (level.indexInLevelsArray + 1 < gridConfig.levels.length) {
-                    correspondingSellPriceStr = gridConfig.levels[level.indexInLevelsArray + 1].price.toFixed(quotePrecisionNum);
-                }
+        for (let i = gridConfig.numberOfGrids - 1; i >= 0; i--) { 
+            const buyLevel = gridConfig.levels[i]; 
+            
+            if (buyLevel.price < currentPrice) {
+                const buyPriceStr = buyLevel.price.toFixed(quotePrecisionNum);
+                const sellLevelForThisBuy = gridConfig.levels[i+1]; 
+                const sellPriceStrForThisBuy = sellLevelForThisBuy.price.toFixed(quotePrecisionNum);
 
-                if (!activeBuyOrdersPerLevel.has(priceStr) && 
-                    (correspondingSellPriceStr === null || !activeSellOrdersPerLevel.has(correspondingSellPriceStr)) ) {
-                    targetBuyLevel = level;
-                    // No break here, as per user's last working observation.
-                    // This means targetBuyLevel will become the *lowest* grid line below currentPrice that is free.
-                    // To get the *highest* grid line below currentPrice that is free, the break should be inside this if.
-                    // Based on user's "代码变成这样就是正确的了", the break is outside this inner if, but inside the outer if.
+                if (!activeBuyOrdersPerLevel.has(buyPriceStr) && !activeSellOrdersPerLevel.has(sellPriceStrForThisBuy)) {
+                    targetBuyGridPairIndex = i; 
                 }
-                // User confirmed this break position makes it work as "find first grid below current, then stop searching further down"
                 break; 
             }
         }
-
-        if (targetBuyLevel) { // targetBuyLevel is now the first grid line strictly below currentPrice
-            const priceStr = targetBuyLevel.price.toFixed(quotePrecisionNum);
-            // Now, we must re-check if THIS specific targetBuyLevel is actually free, because the break above
-            // only stopped searching for *other* levels. The targetBuyLevel itself might have an active order.
-            let correspondingSellPriceStrForTarget = null;
-            if (targetBuyLevel.indexInLevelsArray + 1 < gridConfig.levels.length) {
-                 correspondingSellPriceStrForTarget = gridConfig.levels[targetBuyLevel.indexInLevelsArray + 1].price.toFixed(quotePrecisionNum);
+        
+        if (targetBuyGridPairIndex !== -1) { 
+            const buyLevelToPlace = gridConfig.levels[targetBuyGridPairIndex];
+            const buyPriceStr = buyLevelToPlace.price.toFixed(quotePrecisionNum); 
+            const qtyForThisBuy = parseFloat((gridConfig.usdtPerGrid / buyLevelToPlace.price).toFixed(gridConfig.qtyPrecision));
+            
+            if (qtyForThisBuy < (instrumentInfo[gridConfig.symbol]?.minOrderQty || 0.000001)) {
+                addMessage(`目标买入 @ ${buyPriceStr} 数量 ${qtyForThisBuy} 过小，跳过。`, 'warning');
+                isPlacingOrder = false;
+                return;
             }
 
-            if (!activeBuyOrdersPerLevel.has(priceStr) && 
-                (correspondingSellPriceStrForTarget === null || !activeSellOrdersPerLevel.has(correspondingSellPriceStrForTarget)) ) {
-                // This targetBuyLevel is indeed free to place an order
-                addMessage(`目标买入网格: ${targetBuyLevel.price.toFixed(quotePrecisionNum)} (当前价: ${currentPrice.toFixed(quotePrecisionNum)})`, 'info');
-                const orderLinkId = `grid_${gridConfig.symbol}_buy_${targetBuyLevel.price}_${Date.now()}`;
-                
-                activeBuyOrdersPerLevel.set(priceStr, "PLACING..."); 
-                renderGridOrders();
+            addMessage(`目标买入网格 ${targetBuyGridPairIndex + 1}: ${buyLevelToPlace.price.toFixed(quotePrecisionNum)} (当前价: ${currentPrice.toFixed(quotePrecisionNum)})`, 'info');
+            const orderLinkId = `grid_${gridConfig.symbol}_buy_${buyLevelToPlace.price}_${Date.now()}`;
+            
+            activeBuyOrdersPerLevel.set(buyPriceStr, "PLACING..."); 
+            renderGridPreviewTable();
 
-                const result = await placeGridOrder_CookieBased(gridConfig.symbol, 'Buy', targetBuyLevel.price, targetBuyLevel.quantity, orderLinkId);
-                
-                if (result.success && result.data && result.data.result) {
-                    const orderIdToTrack = result.data.result.orderId;
-                    gridOrders.set(orderIdToTrack, {
-                        clientOrderId: result.data.result.orderLinkId, price: targetBuyLevel.price, side: 'Buy',
-                        status: result.data.result.orderStatus || 'New', quantity: targetBuyLevel.quantity, 
-                        filledQty: parseFloat(result.data.result.cumExecQty || "0"), 
-                        levelIndexInLevelsArray: targetBuyLevel.indexInLevelsArray, symbol: gridConfig.symbol
-                    });
-                    activeBuyOrdersPerLevel.set(priceStr, orderIdToTrack); 
-                    addMessage(`买单 @ ${targetBuyLevel.price.toFixed(quotePrecisionNum)} Cookie 下单成功 (ID: ${orderIdToTrack})`, 'success');
-                } else {
-                    addMessage(`买单 @ ${targetBuyLevel.price.toFixed(quotePrecisionNum)} Cookie 下单失败: ${result.error || '未知错误'}`, 'error');
-                    activeBuyOrdersPerLevel.delete(priceStr); 
-                }
-                renderGridOrders();
+            const result = await placeGridOrder_CookieBased(gridConfig.symbol, 'Buy', buyLevelToPlace.price, qtyForThisBuy, orderLinkId);
+            
+            if (result.success && result.data && result.data.result) {
+                const orderIdToTrack = result.data.result.orderId;
+                gridOrders.set(orderIdToTrack, {
+                    clientOrderId: result.data.result.orderLinkId, price: buyLevelToPlace.price, side: 'Buy',
+                    status: result.data.result.orderStatus || 'New', quantity: qtyForThisBuy, 
+                    filledQty: parseFloat(result.data.result.cumExecQty || "0"), 
+                    levelIndexInLevelsArray: buyLevelToPlace.indexInLevelsArray, 
+                    gridPairIndex: targetBuyGridPairIndex, 
+                    symbol: gridConfig.symbol
+                });
+                activeBuyOrdersPerLevel.set(buyPriceStr, orderIdToTrack); 
+                addMessage(`买单 @ ${buyLevelToPlace.price.toFixed(quotePrecisionNum)} Cookie 下单成功 (ID: ${orderIdToTrack})`, 'success');
             } else {
-                // addMessage(`目标买入网格 ${priceStr} 已有活动订单，本次不重复下单。`, 'debug');
+                addMessage(`买单 @ ${buyLevelToPlace.price.toFixed(quotePrecisionNum)} Cookie 下单失败: ${result.error || '未知错误'}`, 'error');
+                activeBuyOrdersPerLevel.delete(buyPriceStr); 
             }
+            renderGridPreviewTable();
         }
     } catch (error) {
         console.error("Error in manageGridLogic:", error);
@@ -386,9 +375,9 @@ async function manageGridLogic() {
 
 async function startGridTrading() {
     if (isGridRunning) { addMessage("网格已在运行中", "warning"); return; }
-    if (!gridConfig.levels || gridConfig.levels.length === 0) {
+    if (!gridConfig.levels || gridConfig.levels.length === 0 || gridConfig.numberOfGrids <= 0) {
         const calculated = await calculateGridLevels();
-        if (!calculated) { addMessage("请先计算网格或检查参数", "error"); return; }
+        if (!calculated || gridConfig.numberOfGrids <= 0) { addMessage("请先计算网格或检查参数 (确保网格数 > 0)", "error"); return; }
     }
     if (!currentPrice) { addMessage("无法获取当前价格，无法启动网格。", "error"); return; }
 
@@ -396,7 +385,7 @@ async function startGridTrading() {
     updateGridUIState();
     addMessage(`启动网格交易 (Cookie 模式 - 精确逐级): ${gridConfig.symbol}`, 'info');
     gridOrders.clear(); activeBuyOrdersPerLevel.clear(); activeSellOrdersPerLevel.clear();
-    renderGridOrders();
+    renderGridPreviewTable(); 
     await manageGridLogic(); 
     initializeOrderWebSocket(); 
     startGridCheckInterval();   
@@ -429,7 +418,7 @@ async function stopGridTrading(showMessages = true) {
         await Promise.all(cancelPromises);
     }
     gridOrders.clear(); activeBuyOrdersPerLevel.clear(); activeSellOrdersPerLevel.clear();
-    renderGridOrders();
+    renderGridPreviewTable(); 
     if (showMessages) addMessage("网格交易已停止，所有尝试取消的订单已处理。", 'success');
 }
 
@@ -443,51 +432,58 @@ async function handleGridOrderFill(filledOrderUpdate) {
     if (!originalOrderData) return;
     const quotePrecisionNum = Number.isFinite(gridConfig.quotePrecision) ? gridConfig.quotePrecision : 5;
     const qtyPrecisionNum = Number.isFinite(gridConfig.qtyPrecision) ? gridConfig.qtyPrecision : 1;
+    
     const actualFilledQty = parseFloat(filledOrderUpdate.cumExecQty || originalOrderData.filledQty || originalOrderData.quantity);
     if (isNaN(actualFilledQty) || actualFilledQty <= 0) {
-        addMessage(`错误: 订单 ${filledOrderId} 成交数量无效 (${filledOrderUpdate.cumExecQty})`, 'error');
-        gridOrders.delete(filledOrderId); renderGridOrders(); return;
+        addMessage(`错误: 订单 ${filledOrderId} 成交数量无效 (${filledOrderUpdate.cumExecQty || originalOrderData.filledQty})`, 'error');
+        gridOrders.delete(filledOrderId); renderGridPreviewTable(); return;
     }
     originalOrderData.filledQty = actualFilledQty; 
     addMessage(`网格订单成交: ${originalOrderData.side} ${actualFilledQty.toFixed(qtyPrecisionNum)} @ ${parseFloat(filledOrderUpdate.avgPrice || originalOrderData.price).toFixed(quotePrecisionNum)} (ID: ${filledOrderId})`, 'success');
-    const filledPriceStr = originalOrderData.price.toFixed(quotePrecisionNum);
+    const filledBuyPriceStr = originalOrderData.price.toFixed(quotePrecisionNum); 
 
     if (originalOrderData.side === 'Buy') {
-        activeBuyOrdersPerLevel.delete(filledPriceStr); 
-        const sellLevelIndex = originalOrderData.levelIndexInLevelsArray + 1; 
-        if (sellLevelIndex < gridConfig.levels.length) {
-            const sellLevel = gridConfig.levels[sellLevelIndex];
-            const sellPriceStr = sellLevel.price.toFixed(quotePrecisionNum);
+        activeBuyOrdersPerLevel.delete(filledBuyPriceStr); 
+        
+        const sellLevelForThisPair = gridConfig.levels[originalOrderData.levelIndexInLevelsArray + 1]; 
+        
+        if (sellLevelForThisPair) {
+            const sellPriceStr = sellLevelForThisPair.price.toFixed(quotePrecisionNum);
             if (activeSellOrdersPerLevel.has(sellPriceStr) && activeSellOrdersPerLevel.get(sellPriceStr) !== "PLACING...") {
-                addMessage(`已存在有效卖单 @ ${sellLevel.price.toFixed(quotePrecisionNum)}，跳过。`, 'info');
+                addMessage(`已存在有效卖单 @ ${sellLevelForThisPair.price.toFixed(quotePrecisionNum)}，跳过。`, 'info');
             } else {
-                const nextOrderLinkId = `grid_${gridConfig.symbol}_sell_${sellLevel.price}_${Date.now()}`;
+                const nextOrderLinkId = `grid_${gridConfig.symbol}_sell_${sellLevelForThisPair.price}_${Date.now()}`;
                 const quantityForSellOrder = actualFilledQty; 
-                addMessage(`准备放置对应卖单 (Cookie): ${quantityForSellOrder.toFixed(qtyPrecisionNum)} ${gridConfig.symbol} @ ${sellLevel.price.toFixed(quotePrecisionNum)}`, 'info');
+
+                addMessage(`准备放置对应卖单 (Cookie): ${quantityForSellOrder.toFixed(qtyPrecisionNum)} ${gridConfig.symbol} @ ${sellLevelForThisPair.price.toFixed(quotePrecisionNum)}`, 'info');
                 activeSellOrdersPerLevel.set(sellPriceStr, "PLACING..."); 
-                renderGridOrders();
-                const result = await placeGridOrder_CookieBased(gridConfig.symbol, 'Sell', sellLevel.price, quantityForSellOrder, nextOrderLinkId);
+                renderGridPreviewTable();
+                const result = await placeGridOrder_CookieBased(gridConfig.symbol, 'Sell', sellLevelForThisPair.price, quantityForSellOrder, nextOrderLinkId);
                 if (result.success && result.data && result.data.result) {
                     const sellOrderId = result.data.result.orderId;
                     gridOrders.set(sellOrderId, {
-                        clientOrderId: result.data.result.orderLinkId, price: sellLevel.price, side: 'Sell',
+                        clientOrderId: result.data.result.orderLinkId, price: sellLevelForThisPair.price, side: 'Sell',
                         status: result.data.result.orderStatus || 'New', quantity: quantityForSellOrder, 
-                        filledQty: 0, levelIndexInLevelsArray: sellLevel.indexInLevelsArray, symbol: gridConfig.symbol
+                        filledQty: 0, 
+                        levelIndexInLevelsArray: sellLevelForThisPair.indexInLevelsArray, 
+                        gridPairIndex: originalOrderData.gridPairIndex, 
+                        symbol: gridConfig.symbol
                     });
                     activeSellOrdersPerLevel.set(sellPriceStr, sellOrderId);
-                    addMessage(`对应卖单 @ ${sellLevel.price.toFixed(quotePrecisionNum)} Cookie 放置成功 (ID: ${sellOrderId})`, 'success');
+                    addMessage(`对应卖单 @ ${sellLevelForThisPair.price.toFixed(quotePrecisionNum)} Cookie 放置成功 (ID: ${sellOrderId})`, 'success');
                 } else {
-                    addMessage(`对应卖单 @ ${sellLevel.price.toFixed(quotePrecisionNum)} Cookie 放置失败: ${result.error || '未知错误'}`, 'error');
+                    addMessage(`对应卖单 @ ${sellLevelForThisPair.price.toFixed(quotePrecisionNum)} Cookie 放置失败: ${result.error || '未知错误'}`, 'error');
                     activeSellOrdersPerLevel.delete(sellPriceStr); 
                 }
             }
-        } else { addMessage(`买单成交于最高网格 ${originalOrderData.price.toFixed(quotePrecisionNum)}，无更高卖出点。`, 'info'); }
+        } else { addMessage(`买单成交于最高网格 ${originalOrderData.price.toFixed(quotePrecisionNum)}，无法找到对应的更高卖出点。`, 'warning'); }
     } else { // Original order was 'Sell'
-        activeSellOrdersPerLevel.delete(filledPriceStr); 
-        addMessage(`卖单 @ ${originalOrderData.price.toFixed(quotePrecisionNum)} 成交。一个网格周期完成。`, 'success');
+        const sellPriceStr = originalOrderData.price.toFixed(quotePrecisionNum);
+        activeSellOrdersPerLevel.delete(sellPriceStr); 
+        addMessage(`卖单 @ ${sellPriceStr} 成交。网格 ${originalOrderData.gridPairIndex + 1} 周期完成。`, 'success');
     }
     gridOrders.delete(filledOrderId); 
-    renderGridOrders();
+    renderGridPreviewTable();
     if(isGridRunning) await manageGridLogic(); 
 }
 
@@ -524,10 +520,10 @@ function initializePriceWebSocket() {
         if (data.op === 'subscribe') {
             if (!data.success) {
                 addMessage(`价格订阅 (${symbolToSubscribe}) 失败: ${data.ret_msg}`, 'error');
-                if (symbolToSubscribe !== 'NCPCUSDT' && gridSymbolInput) { 
-                    addMessage('尝试订阅 NCPCUSDT 作为备用', 'info');
-                    gridSymbolInput.value = 'NCPCUSDT'; gridConfig.symbol = 'NCPCUSDT';
-                    await getInstrumentInfo('NCPCUSDT'); initializePriceWebSocket(); 
+                if (symbolToSubscribe !== 'BTCUSDT' && gridSymbolInput) { 
+                    addMessage('尝试订阅 BTCUSDT 作为备用', 'info');
+                    gridSymbolInput.value = 'BTCUSDT'; gridConfig.symbol = 'BTCUSDT';
+                    await getInstrumentInfo('BTCUSDT'); initializePriceWebSocket(); 
                 }
             } else { addMessage(`价格订阅 (${data.args ? data.args[0] : symbolToSubscribe}) 成功`, 'success'); }
         } else if (data.topic && data.topic.startsWith(`publicTrade.`)) {
@@ -549,7 +545,6 @@ function initializePriceWebSocket() {
             addMessage(`价格 WebSocket ${reconnectAttempts} 次尝试重连于 ${delay / 1000}s 后...`, 'info');
             setTimeout(initializePriceWebSocket, delay);
         }
-        
     };
     priceWs.onerror = (err) => { console.error("Price WS Error:", err); addMessage(`价格 WebSocket (${priceWs.currentSymbol || symbolToSubscribe}) 发生错误`, 'error'); };
 }
@@ -558,22 +553,14 @@ async function initializeOrderWebSocket() {
     const currentApiSecret = API_SECRET || (apiSecretInput ? apiSecretInput.value.trim() : '');
     if (!currentApiKey || !currentApiSecret) { addMessage('无法监听订单，缺少 API 密钥', 'error'); return; }
     if (orderWs && (orderWs.readyState === WebSocket.OPEN || orderWs.readyState === WebSocket.CONNECTING)) return;
-    
-    await syncServerTime(); // Ensure time is synced before generating expires for signature
-    const expires = getAdjustedTimestamp() + 20000; // Expires in 20 seconds
-    
-    // Use the dedicated signature function for WebSocket authentication
+    await syncServerTime(); 
+    const expires = getAdjustedTimestamp() + 20000; 
     const signature = await getWebSocketAuthSignature(currentApiSecret, expires.toString());
-
     orderWs = new WebSocket('wss://stream.bybit.com/v5/private');
     const intervalRef = { id: orderWsHeartbeatInterval };
     orderWs.onopen = () => {
         addMessage('订单 WebSocket 连接成功，正在认证...', 'success');
-        orderWs.send(JSON.stringify({
-            op: 'auth',
-            args: [currentApiKey, expires.toString(), signature], // Send API Key, expires, and the new signature
-            req_id: `order_auth_${Date.now()}`
-        }));
+        orderWs.send(JSON.stringify({ op: 'auth', args: [currentApiKey, expires.toString(), signature], req_id: `order_auth_${Date.now()}` }));
     };
     orderWs.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -600,11 +587,11 @@ async function initializeOrderWebSocket() {
                             if(GOrder.side === 'Buy') activeBuyOrdersPerLevel.delete(priceStr);
                             else activeSellOrdersPerLevel.delete(priceStr);
                         }
-                        gridOrders.delete(orderUpdate.orderId); renderGridOrders();
+                        gridOrders.delete(orderUpdate.orderId); renderGridPreviewTable(); 
                         if(isGridRunning) await manageGridLogic(); 
                     } else { 
                         const current = gridOrders.get(orderUpdate.orderId);
-                        if (current) { current.status = orderUpdate.orderStatus; gridOrders.set(orderUpdate.orderId, current); renderGridOrders(); }
+                        if (current) { current.status = orderUpdate.orderStatus; gridOrders.set(orderUpdate.orderId, current); renderGridPreviewTable(); } 
                     }
                 }
             });
@@ -619,9 +606,9 @@ async function initializeOrderWebSocket() {
             const delay = Math.min(5000 * Math.pow(2, reconnectAttempts -1), maxReconnectDelay);
             addMessage(`订单 WebSocket 尝试重连于 ${delay / 1000}s 后...`, 'info');
             setTimeout(initializeOrderWebSocket, delay);
-        } else if (event.code === 1000 && isGridRunning) {
+        } else if (event.code === 1000 && isGridRunning) { 
             addMessage(`订单 WebSocket 正常关闭，但网格仍在运行。将尝试自动重连。`, 'info');
-            setTimeout(initializeOrderWebSocket, 5000); // Attempt to reconnect even on clean close if grid is running
+            setTimeout(initializeOrderWebSocket, 5000); 
         }
     };
     orderWs.onerror = (err) => { console.error("Order WS Error:", err); addMessage('订单 WebSocket 发生错误', 'error'); };
@@ -651,7 +638,7 @@ function startGridCheckInterval() {
                         addMessage(`轮询更新订单 ${apiOrder.orderId} 状态: ${localOrderData.status}->${apiOrder.orderStatus}, 成交量: ${localOrderData.filledQty}->${apiOrder.cumExecQty}`, 'info');
                         localOrderData.status = apiOrder.orderStatus;
                         if(apiOrder.cumExecQty) localOrderData.filledQty = parseFloat(apiOrder.cumExecQty);
-                        gridOrders.set(apiOrder.orderId, localOrderData); renderGridOrders();
+                        gridOrders.set(apiOrder.orderId, localOrderData); renderGridPreviewTable(); 
                         if (apiOrder.orderStatus === 'Filled' || apiOrder.orderStatus === 'PartiallyFilledAndCancelled') { await handleGridOrderFill(apiOrder); }
                     }
                 }
@@ -670,7 +657,7 @@ function startGridCheckInterval() {
                         addMessage(`轮询确认订单 ${orderId} 状态: ${orderFromHistory.orderStatus}`, 'warning');
                         const GOrder = gridOrders.get(orderId);
                         if(GOrder) { const priceStr = GOrder.price.toFixed(gridConfig.quotePrecision); if(GOrder.side === 'Buy') activeBuyOrdersPerLevel.delete(priceStr); else activeSellOrdersPerLevel.delete(priceStr); }
-                        gridOrders.delete(orderId); renderGridOrders(); if(isGridRunning) await manageGridLogic();
+                        gridOrders.delete(orderId); renderGridPreviewTable(); if(isGridRunning) await manageGridLogic(); 
                     } else { addMessage(`轮询订单 ${orderId}: 历史记录状态为 ${orderFromHistory.orderStatus}`, 'info'); }
                 } else { addMessage(`轮询订单 ${orderId}: 查询历史失败或无记录。`, 'warning'); }
             }
@@ -696,34 +683,73 @@ function renderMessages() {
     if (!messageList) return;
     messageList.innerHTML = messages.map(msg => `<li class="${msg.type === 'debug' ? 'info' : msg.type}">[${new Date(msg.timestamp).toLocaleTimeString()}] ${msg.text}</li>`).join('');
 }
-function renderGridOrders() { 
-     if (!gridOrdersList) return;
-     if (gridOrders.size === 0 && activeBuyOrdersPerLevel.size === 0 && activeSellOrdersPerLevel.size === 0) { 
-         gridOrdersList.innerHTML = '<li>无当前活动的网格订单</li>'; return; 
-     }
-     gridOrdersList.innerHTML = ''; 
-     const displayItems = []; const quotePrecisionNum = Number.isFinite(gridConfig.quotePrecision) ? gridConfig.quotePrecision : 5;
-     gridOrders.forEach((order, orderId) => { displayItems.push({ ...order, orderId, displayStatus: order.status }); });
-     activeBuyOrdersPerLevel.forEach((statusOrId, priceStr) => {
-         if (statusOrId === "PLACING...") {
-            const levelData = gridConfig.levels.find(l => l.price.toFixed(quotePrecisionNum) === priceStr);
-            if (levelData) { displayItems.push({ price: levelData.price, side: 'Buy', quantity: levelData.quantity, symbol: gridConfig.symbol, displayStatus: '正在下单...', orderId: `placing-${priceStr}` }); }
-         }
-     });
-      activeSellOrdersPerLevel.forEach((statusOrId, priceStr) => {
-         if (statusOrId === "PLACING...") {
-            const levelData = gridConfig.levels.find(l => l.price.toFixed(quotePrecisionNum) === priceStr);
-            if (levelData) { displayItems.push({ price: levelData.price, side: 'Sell', quantity: levelData.quantity, symbol: gridConfig.symbol, displayStatus: '正在下单...', orderId: `placing-${priceStr}` }); }
-         }
-     });
-     const sortedItems = displayItems.sort((a,b) => b.price - a.price); 
-     sortedItems.forEach((item) => {
-         const li = document.createElement('li'); const orderIdShort = item.orderId.slice(-6);
-         const baseCoinDisplay = item.symbol ? item.symbol.replace('USDT', '') : (gridConfig.symbol ? gridConfig.symbol.replace('USDT','') : '');
-         li.textContent = `${item.side} | ${item.quantity} ${baseCoinDisplay} | @ ${item.price.toFixed(quotePrecisionNum)} | ${item.displayStatus} | ID: ...${orderIdShort}`;
-         li.classList.add(item.side === 'Buy' ? 'success' : 'error'); gridOrdersList.appendChild(li);
-     });
+
+function renderGridPreviewTable() { 
+    if (!gridPreviewTableBody) {
+        console.error("renderGridPreviewTable: gridPreviewTableBody is not defined.");
+        return;
+    }
+    // Defensive check for critical Maps
+    if (typeof activeBuyOrdersPerLevel === 'undefined' || typeof activeSellOrdersPerLevel === 'undefined' || typeof gridOrders === 'undefined') {
+        console.error("CRITICAL: State tracking Maps (activeBuyOrdersPerLevel, activeSellOrdersPerLevel, gridOrders) are undefined in renderGridPreviewTable!");
+        addMessage("内部错误: 网格状态跟踪变量未定义，请刷新。", "error");
+        gridPreviewTableBody.innerHTML = '<tr><td colspan="5" style="text-align: center;">内部渲染错误，请刷新</td></tr>';
+        return;
+    }
+
+    gridPreviewTableBody.innerHTML = ''; 
+
+    if (!gridConfig.levels || gridConfig.levels.length < 2 || gridConfig.numberOfGrids <= 0) {
+        const row = gridPreviewTableBody.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 5;
+        cell.style.textAlign = "center";
+        cell.textContent = (gridConfig.levels && gridConfig.levels.length === 0) ? "请先计算网格" : "网格参数不足";
+        return;
+    }
+
+    const quotePrecisionNum = Number.isFinite(gridConfig.quotePrecision) ? gridConfig.quotePrecision : 5;
+    const qtyPrecisionNum = Number.isFinite(gridConfig.qtyPrecision) ? gridConfig.qtyPrecision : 1;
+
+    for (let i = 0; i < gridConfig.numberOfGrids; i++) { 
+        const buyLevel = gridConfig.levels[i];
+        const sellLevel = gridConfig.levels[i + 1];
+        const buyPriceStr = buyLevel.price.toFixed(quotePrecisionNum);
+        const sellPriceStr = sellLevel.price.toFixed(quotePrecisionNum);
+        // Calculate quantity based on usdtPerGrid and the specific buyLevel price for this grid pair
+        const qtyForThisGrid = parseFloat((gridConfig.usdtPerGrid / buyLevel.price).toFixed(qtyPrecisionNum));
+
+
+        let statusText = "待命";
+        let statusClass = "status-waiting";
+
+        const activeBuyOrderId = activeBuyOrdersPerLevel.get(buyPriceStr);
+        // For a given buy level, its corresponding sell is at sellLevel.price (which is gridConfig.levels[i+1].price)
+        const activeSellOrderId = activeSellOrdersPerLevel.get(sellPriceStr); 
+
+        if (activeBuyOrderId === "PLACING...") {
+            statusText = "买单处理中..."; statusClass = "status-placing-buy";
+        } else if (activeBuyOrderId) { 
+            const orderDetails = gridOrders.get(activeBuyOrderId);
+            statusText = `等待买入 (${orderDetails ? orderDetails.status : '未知'})`; statusClass = "status-active-buy";
+        } else if (activeSellOrderId === "PLACING...") { // This sell order corresponds to the buy at buyLevel
+            statusText = "卖单处理中..."; statusClass = "status-placing-sell";
+        } else if (activeSellOrderId) {
+            const orderDetails = gridOrders.get(activeSellOrderId);
+            statusText = `等待卖出 (${orderDetails ? orderDetails.status : '未知'})`; statusClass = "status-active-sell";
+        }
+        
+        const row = gridPreviewTableBody.insertRow();
+        row.insertCell().textContent = i + 1;
+        row.insertCell().textContent = buyLevel.price.toFixed(quotePrecisionNum);
+        row.insertCell().textContent = sellLevel.price.toFixed(quotePrecisionNum);
+        row.insertCell().textContent = qtyForThisGrid.toFixed(qtyPrecisionNum);
+        const statusCell = row.insertCell();
+        statusCell.textContent = statusText;
+        statusCell.className = statusClass;
+    }
 }
+
 function updateGridUIState() { 
     const commonInputs = [gridSymbolInput, upperPriceInput, lowerPriceInput, gridCountInput, totalUsdtInput];
     if (isGridRunning) {
@@ -757,12 +783,12 @@ function initDOMElements() {
     gridSymbolInput = getElementByIdSafe('grid-symbol'); upperPriceInput = getElementByIdSafe('upper-price'); lowerPriceInput = getElementByIdSafe('lower-price');
     gridCountInput = getElementByIdSafe('grid-count'); totalUsdtInput = getElementByIdSafe('total-usdt'); usdtPerGridSpan = getElementByIdSafe('usdt-per-grid', false);
     priceIntervalSpan = getElementByIdSafe('price-interval', false); qtyPerBuyGridSpan = getElementByIdSafe('qty-per-buy-grid', false); qtyPerSellGridSpan = getElementByIdSafe('qty-per-sell-grid', false);
-    gridPreviewList = getElementByIdSafe('grid-preview-list'); gridOrdersList = getElementByIdSafe('grid-orders-list'); startGridBtn = getElementByIdSafe('start-grid-btn');
+    gridPreviewTableBody = getElementByIdSafe('grid-preview-table-body'); 
+    startGridBtn = getElementByIdSafe('start-grid-btn');
     stopGridBtn = getElementByIdSafe('stop-grid-btn'); calculateGridBtn = getElementByIdSafe('calculate-grid-btn'); gridStatusSpan = getElementByIdSafe('grid-status');
     currentPriceSpan = getElementByIdSafe('current-price'); lastUpdatedSpan = getElementByIdSafe('last-updated'); feeRateSpan = getElementByIdSafe('fee-rate');
     currentSymbolSpan = getElementByIdSafe('current-symbol'); apiKeyInput = getElementByIdSafe('api-key'); apiSecretInput = getElementByIdSafe('api-secret');
-    passwordInput = getElementByIdSafe('password'); jsonOutput = getElementByIdSafe('json-output', false); submitResult = getElementByIdSafe('submit-result');
-    orderResultsList = getElementByIdSafe('order-results-list', false);
+    passwordInput = getElementByIdSafe('password'); 
 }
 function addSafeListener(elementOrId, eventType, handler, elementIdForLog) { 
     let element = elementOrId;
@@ -771,24 +797,27 @@ function addSafeListener(elementOrId, eventType, handler, elementIdForLog) {
     else { if (typeof elementOrId === 'string') { console.warn(`元素 ID '${elementIdForLog}' 未找到. 无法添加 '${eventType}' 事件监听器.`); } }
 }
 function initEventListeners() { 
-    addSafeListener('tabGridBtn', 'click', (e) => switchTab('tabGrid', e.target)); addSafeListener('tabOrderBtn', 'click', (e) => switchTab('tabOrder', e.target));
-    addSafeListener('tabSetBtn', 'click', (e) => switchTab('tabSet', e.target)); addSafeListener('tabLogBtn', 'click', (e) => switchTab('tabLog', e.target));
-    addSafeListener(calculateGridBtn, 'click', calculateGridLevels, 'calculate-grid-btn'); addSafeListener(startGridBtn, 'click', startGridTrading, 'start-grid-btn');
+    addSafeListener('tabGridBtn', 'click', (e) => switchTab('tabGrid', e.target)); 
+    addSafeListener('tabSetBtn', 'click', (e) => switchTab('tabSet', e.target)); 
+    addSafeListener('tabLogBtn', 'click', (e) => switchTab('tabLog', e.target));
+    addSafeListener(calculateGridBtn, 'click', calculateGridLevels, 'calculate-grid-btn'); 
+    addSafeListener(startGridBtn, 'click', startGridTrading, 'start-grid-btn');
     addSafeListener(stopGridBtn, 'click', () => stopGridTrading(true), 'stop-grid-btn');
     addSafeListener(gridSymbolInput, 'change', async () => { 
         if (!gridSymbolInput) return; const newSymbol = gridSymbolInput.value.trim().toUpperCase();
         if (newSymbol === gridConfig.symbol && instrumentInfo[newSymbol]) return; 
         gridConfig.symbol = newSymbol; await getInstrumentInfo(gridConfig.symbol); initializePriceWebSocket(); 
-        gridOrders.clear(); activeBuyOrdersPerLevel.clear(); activeSellOrdersPerLevel.clear(); renderGridOrders();
+        gridOrders.clear(); activeBuyOrdersPerLevel.clear(); activeSellOrdersPerLevel.clear(); renderGridPreviewTable();
         if (isGridRunning) { const oldSymbol = priceWs ? priceWs.currentSymbol : '未知'; addMessage(`交易对已更改，停止旧 ${oldSymbol} 网格...`, 'warning'); await stopGridTrading(true); }
         await calculateGridLevels(); 
      }, 'grid-symbol');
     const gridParamInputsForListener = [ { el: upperPriceInput, id: 'upper-price' }, { el: lowerPriceInput, id: 'lower-price' }, { el: gridCountInput, id: 'grid-count' }, { el: totalUsdtInput, id: 'total-usdt' } ];
     gridParamInputsForListener.forEach(item => { addSafeListener(item.el, 'change', () => { if (!isGridRunning) calculateGridLevels(); }, item.id); });
-    addSafeListener('save-config-btn', 'click', saveConfig); addSafeListener('load-config-btn', 'click', loadConfig); addSafeListener('get-fee-btn', 'click', getFeeRate);
+    addSafeListener('save-config-btn', 'click', saveConfig); 
+    addSafeListener('load-config-btn', 'click', loadConfig); 
+    addSafeListener('get-fee-btn', 'click', getFeeRate);
     addSafeListener('toggle-btn', 'click', () => chrome.runtime.sendMessage({ action: 'toggleSidebar' }));
     addSafeListener('test-communication-btn', 'click', () => { chrome.runtime.sendMessage({ action: 'testCommunication' }, (response) => { addMessage(`通信测试: ${response?.message || '失败'}`, response?.success ? 'success' : 'error'); }); });
-    addSafeListener('place-order-btn', 'click', async () => { addMessage("手动下单功能暂未对接网格逻辑。", "info"); });
 }
 async function initPage() { 
     initDOMElements(); initEventListeners(); switchTab('tabGrid', getElementByIdSafe('tabGridBtn', false)); 
@@ -798,8 +827,7 @@ async function initPage() {
     await getInstrumentInfo(initialSymbol); await calculateGridLevels(); 
     if (API_KEY && API_SECRET) { await getFeeRate(); } else if (!configLoaded) { addMessage("API密钥未配置，请在设置中配置。", "warning"); }
     initializePriceWebSocket(); 
-    setInterval(syncServerTime, 60000 * 1); // Sync time every 1 minute
-    renderGridOrders(); 
+    setInterval(syncServerTime, 60000 * 1); 
 }
 // --- Config Storage --- 
 async function encryptConfig(config, password) { 
@@ -846,7 +874,7 @@ async function loadConfig() {
 
 // --- Start the application ---
 document.addEventListener('DOMContentLoaded', () => {
-    if (document.getElementById('grid-symbol') || document.querySelector('div.container')) {
+    if (document.getElementById('grid-symbol') && document.querySelector('div.container')) {
         console.log("sidebar.js: Running in sidebar.html context. Initializing page.");
         initPage();
     }
